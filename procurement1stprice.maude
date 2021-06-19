@@ -1,0 +1,448 @@
+in inc/system.maude
+
+fmod COMMANDS is
+	pr	OBJECT .
+	pr	DELAYED-MESSAGE .
+
+	op report :_ : Nat -> Attribute [ctor] .
+	op report : -> Attribute [ctor] .
+	op rate : -> Attribute [ctor] .
+	op init : -> Attribute [ctor] .
+	op watch : -> Attribute [ctor] .
+	op placeBid : -> Attribute [ctor] .
+	op sendResult : -> Attribute [ctor] .
+endfm
+
+fmod EXCHANGE-RATE is
+	pr	COMMANDS .
+	
+	op	rate :_ : Float -> Attribute [gather (&)] .
+endfm
+
+fmod ACTIONEER is
+	pr 	COMMANDS .
+
+	op	bid :_ :  Float -> Attribute [gather (&)] .	
+	op	winnerId :_ :  Nat -> Attribute [gather (&)] .	
+	op	p :_ :  Float -> Attribute [gather (&)] .	
+	op	P :_ :  Float -> Attribute [gather (&)] .	
+endfm
+
+fmod BIDDER is
+	pr	PARAMETERS .
+	pr 	COMMANDS .
+	
+	sort BidderType .
+	ops	domestic foreign : -> BidderType [ctor] .
+
+	op	v :_ :  Float -> Attribute [gather (&)] .
+	op	L :_ :  Float -> Attribute [gather (&)] .
+	op	L0 :_ :  Float -> Attribute [gather (&)] .
+	op	bidder :_ :  BidderType -> Attribute [gather (&)] .
+	op	M :_ :  Float -> Attribute [gather (&)] .
+	op	items :_ :  Nat -> Attribute [gather (&)] .
+
+	op	meanWatchDelay : Float -> Float [ctor] .
+	var	M : Float .
+	eq	meanWatchDelay(M) = dt * 50.0 / (1.0 + M) .
+endfm
+
+fmod SNIPER is
+	pr 	COMMANDS .
+	pr	BIDDER .
+endfm
+
+mod SDE-DYNAMICS is
+	pr	SYSTEM .
+	pr	EXCHANGE-RATE .
+	
+	var conf : Conf .	
+	var as : AttributeSet .
+	var id oid : Nat .
+	var rate timeStep : Float .
+
+	*** time tick
+	eq processTimeTick(< id : ExchangeRate | rate : rate, as > conf, timeStep)
+	=
+	< id : ExchangeRate | rate : rate * (1.0 + mu * dt + sigma * sampleNormal(0.0, sqrtdt)), as >
+	processTimeTick(conf, timeStep) .
+	
+	*** report exchange rate
+	rl < id : ExchangeRate | rate : rate, as >
+	< id <- report : oid >
+	=>
+	< id : ExchangeRate | rate : rate, as >
+	[ sampleExp(delay) , < oid <- rate, rate : rate > ] .
+
+	*** auction ends
+	eq processAuctionEnd(< id : ExchangeRate | rate : rate, as > conf)
+	=
+	< id : ExchangeRate | rate : rate, as >
+	processAuctionEnd(conf) .
+	
+	*** tick
+	eq processTick(< id : ExchangeRate | rate : rate, as > conf)
+	=
+	< id : ExchangeRate | rate : rate, as >
+	processTick(conf) .
+endm
+
+mod ACTIONEER-DYNAMICS is
+	pr	SYSTEM .
+	pr	ACTIONEER .
+	pr	BIDDER .
+	pr	SNIPER .
+	
+	var conf : Conf .	
+	var as : AttributeSet .
+	var id oid winnerId : Nat .
+	var bid v p P timeStep : Float .
+
+	*** time tick
+	eq processTimeTick(< id : Actioneer | as > conf, timeStep)
+	=
+	< id : Actioneer | as >
+	processTimeTick(conf, timeStep) .
+	
+	*** report auction state data
+	rl < id : Actioneer | bid : bid, winnerId : winnerId, P : P, as >
+	< id <- report : oid >
+	=>
+	< id : Actioneer | bid : bid, winnerId : winnerId, P : P, as >
+	[ sampleExp(delay) , < oid <- report, bid : bid, winnerId : winnerId, P : P > ] .
+	
+	*** process bid
+	rl < id : Actioneer | bid : bid, winnerId : winnerId, as >
+	< id <- placeBid, bid : v, id : oid >
+	=>
+	if(v < bid)
+		then
+			< id : Actioneer | bid : v, winnerId : oid, as >
+		else
+			< id : Actioneer | bid : bid, winnerId : winnerId, as >
+	fi .
+
+	*** auction ends
+	op sendResult : Nat Nat Float Float Float -> ActiveConf [ctor] .
+	
+	eq processAuctionEnd(< id : Actioneer | bid : bid, winnerId : winnerId, p : p, P : P, as > conf)
+	=
+	< id : Actioneer | bid : bid, winnerId : winnerId, p : bid, P : (1.0 - alpha) * P + alpha * bid, as >
+	< id <- sendResult >
+	processAuctionEnd(conf) .
+	
+	rl < id : Actioneer | bid : bid, winnerId : winnerId, p : p, P : P, as >
+	< id <- sendResult >
+	=>
+	< id : Actioneer | bid : P0, winnerId : winnerId, p : p, P : P, as >
+	sendResult(2, winnerId, bid, p, P) .
+
+	eq sendResult(oid, winnerId, bid, p, P)
+	=
+	< oid <- sendResult, winnerId : winnerId, bid : bid, p : p, P : P >
+	if(oid < 1 + BidderNumber + ForeignBidderNumber + SniperNumber) then sendResult(s oid, winnerId, bid, p, P) else none fi .
+	
+	*** tick
+	op sendInit : Nat Float -> ActiveConf [ctor] .
+
+	eq processTick(< id : Actioneer | P : P, as > conf)
+	=
+	< id : Actioneer | P : P, as >
+	sendInit(2, P)
+	processTick(conf) .
+	
+	eq sendInit(oid, P)
+	=
+	< oid <- init, P : P >
+	if(oid < 1 + BidderNumber + ForeignBidderNumber + SniperNumber) then sendInit(s oid, P) else none fi .
+
+endm
+
+mod BIDDER-DYNAMICS is
+	pr	SYSTEM .
+	pr	BIDDER .
+	pr	ACTIONEER .
+	pr	EXCHANGE-RATE .
+	
+	op generateLimitPrice : Float Float Float -> Float .
+	op calculateLimitPrice : Float Float -> Float .
+	op updateV : Float Float Float -> Float .
+	op placeBid : Nat Float Nat Float Float -> Conf .
+	op updateMotivation : Float Float Float -> Float .
+	op calculateMotivation : Float -> Float .
+	
+	var conf : Conf .	
+	var as as2 as3 : AttributeSet .
+	var id id2 winnerId n : Nat .
+	var v L L0 M bid rate p P timeStep : Float .
+	
+	*** init domestic
+	rl < id : Bidder | bidder : domestic, v : v, L : L, L0 : L0, M : M, as >
+	< id <- init, P : P >
+	=>
+	< id : Bidder | bidder : domestic, v : 3.0 * P, L : generateLimitPrice(M, P, L0), L0 : sampleUniform(L00, L01), M : M, as >
+	[ sampleExp(delay) , < id <- watch > ] .
+	
+	*** init foreign
+	rl < id : Bidder | bidder : foreign, v : v, L : L, L0 : L0, M : M, as >
+	< id <- init, P : P >
+	< id2 : ExchangeRate | rate : rate, as2 >
+	=>
+	< id : Bidder | bidder : foreign, v : 3.0 * P / rate, L : generateLimitPrice(M, P, L0 * rate) / rate, L0 : sampleUniform(L00, L01) / rate,  M : M, as >
+	[ sampleExp(delay) , < id <- watch > ]
+	< id2 : ExchangeRate | rate : rate, as2 > .
+	
+	eq generateLimitPrice(M, P, L0) = calculateLimitPrice((1.1 - 0.3 * M) * P, L0) .
+	eq calculateLimitPrice(L, L0) = if(L >= L0) then L else L0 fi .
+	
+	*** time tick
+	eq processTimeTick(< id : Bidder | as > conf, timeStep)
+	=
+	< id : Bidder | as >
+	processTimeTick(conf, timeStep) .
+	
+	*** watch
+	rl < id : Bidder | as >
+	< id <- watch >
+	=>
+	< id : Bidder | as >
+	[ sampleExp(delay) , < 0 <- report : id > ] .
+
+	*** domestic
+	rl < id : Bidder | bidder : domestic, v : v, L : L, as >
+	< id <- report, bid : bid, winnerId : winnerId, as2 >
+	=>
+	< id : Bidder | bidder : domestic, v : updateV(bid, v, L), L : L, as >
+	[ sampleExp(delay) , < id <- placeBid, bid : bid, winnerId : winnerId > ] .
+	
+	rl < id : Bidder | bidder : domestic, v : v, L : L, M : M, as >
+	< id <- placeBid, bid : bid, winnerId : winnerId >
+	=>
+	< id : Bidder | bidder : domestic, v : v, L : L, M : M, as >
+	placeBid(id, v, winnerId, bid, L)
+	[ sampleExp(meanWatchDelay(M)), < id <- watch > ] .
+	
+	*** foreign
+	rl < id : Bidder | bidder : foreign, v : v, L : L, as >
+	< id <- report, bid : bid, winnerId : winnerId, as2 >
+	< id2 : ExchangeRate | rate : rate, as3 >
+	=>
+	< id : Bidder | bidder : foreign, v : updateV(bid / rate, v, L), L : L, as >
+	[ sampleExp(delay) , < id <- placeBid, bid : bid, winnerId : winnerId > ]
+	< id2 : ExchangeRate | rate : rate, as3 > .
+	
+	rl < id : Bidder | bidder : foreign, v : v, L : L, M : M, as >
+	< id <- placeBid, bid : bid, winnerId : winnerId >
+	< id2 : ExchangeRate | rate : rate, as3 >
+	=>
+	< id : Bidder | bidder : foreign, v : v, L : L, M : M, as >
+	placeBid(id, v * rate, winnerId, bid, L * rate)
+	< id2 : ExchangeRate | rate : rate, as3 >
+	[ sampleExp(meanWatchDelay(M)), < id <- watch > ] .
+	
+	eq placeBid(id, v, winnerId, bid, L)
+	=
+	if(v < bid and winnerId =/= id)
+		then
+			if sampleBool(0.1 * bid / L)
+				then
+					[ sampleExp(delay) , < 0 <- placeBid, bid : v, id : id > ]
+				else
+					none
+			fi
+		else
+			none
+	fi .
+	
+	eq updateV(bid, v, L) = if v >= bid then max(sampleNormal(0.9, 0.05) * bid, L) else v fi .
+
+	*** auction ends
+	eq processAuctionEnd(< id : Bidder | as > conf)
+	=
+	< id : Bidder | as >
+	processAuctionEnd(conf) .
+
+	*** update state if item has been won
+	crl < id : Bidder | M : M, items : n, as >
+	< id <- sendResult, winnerId : winnerId, as2 >
+	=>
+	< id : Bidder | M : getNonZeroValue(M - 0.05), items : s n, as >
+	if id == winnerId .
+
+	*** update state of a bidder if item hasn't been won
+	crl < id : Bidder | M : M, as >
+	< id <- sendResult, winnerId : winnerId, p : p, P : P, as2 >
+	=>
+	< id : Bidder | M : updateMotivation(M, p, P), as >
+	if id =/= winnerId .
+	
+	eq	updateMotivation(M, p, P) = calculateMotivation(M + sampleNormal(0.1 / p, 0.02) + 0.05 * (1.0 - p / P)) .
+	eq calculateMotivation(M) = if(M <= 1.0) then M else sampleUniform(0.0, 1.0) fi .
+
+	*** tick
+	eq processTick(< id : Bidder | as > conf)
+	=
+	< id : Bidder | as >
+	processTick(conf) .
+endm
+
+mod SNIPER-DYNAMICS is
+	pr	SYSTEM .
+	pr	CONVERSION .
+	pr	SNIPER .
+	pr	ACTIONEER .
+	
+	var conf : Conf .	
+	var as as2 as3 : AttributeSet .
+	var id id2 id3 winnerId n : Nat .
+	var P bid rate timeStep : Float .
+	
+	*** init
+	rl < id : Sniper | as >
+	< id <- init, as2 >
+	=>
+	< id : Sniper | as >
+	[ sampleUniform(0.99 * T, T), < id <- watch > ] .
+
+	*** time tick
+	eq processTimeTick(< id : Sniper | as > conf, timeStep)
+	=
+	< id : Sniper | as >
+	processTimeTick(conf, timeStep) .
+	
+	*** watch
+	rl < id : Sniper | as >
+	< id <- watch >
+	=>
+	< id : Sniper | as >
+	[ sampleExp(delay) , < 0 <- report : id > ] .
+
+	*** place bid
+	rl < id : Sniper | as >
+	< id <- report, bid : bid, P : P, as2 >
+	=>
+	< id : Sniper | as  >
+	[ sampleExp(delay) , < 0 <- placeBid, bid : max(bid / 2.0, sampleUniform(0.95, 1.3) * P), id : id > ] .
+
+	*** auction ends
+	eq processAuctionEnd(< id : Sniper | as > conf)
+	=
+	< id : Sniper | as >
+	processAuctionEnd(conf) .
+	
+	*** update state if item has been won
+	crl < id : Sniper | items : n, as >
+	< id <- sendResult, winnerId : winnerId, as2 >
+	=>
+	< id : Sniper | items : s n, as >
+	if id == winnerId .
+
+	*** update state if item hasn't been won
+	crl < id : Sniper | as >
+	< id <- sendResult, winnerId : winnerId, as2 >
+	=>
+	< id : Sniper | as >
+	if id =/= winnerId .
+
+	*** tick
+	eq processTick(< id : Sniper | as > conf)
+	=
+	< id : Sniper | as >
+	processTick(conf) .
+endm
+
+mod SYSTEM-INIT is
+	inc SDE-DYNAMICS .
+	inc ACTIONEER-DYNAMICS .
+	inc BIDDER-DYNAMICS .
+	inc SNIPER-DYNAMICS .
+	
+	op	initBidders : Nat Nat -> ActiveConf [ctor] .
+	op	initForeignBidders : Nat Nat -> ActiveConf [ctor] .
+	op	initSnipers : Nat Nat -> ActiveConf [ctor] .
+	
+	var id n : Nat .
+	
+	eq	initState
+		=
+		{
+		< 0 : Actioneer | bid : P0, winnerId : 0, p : P0, P : P0 >
+		< 1 : ExchangeRate | rate : rate0 >
+		initBidders(2, 0)
+		initForeignBidders(2 + BidderNumber, 0)
+		initSnipers(2 + BidderNumber + ForeignBidderNumber, 0)
+		, time(0.0), round(1) } .
+		
+	*** init domestic bidders
+	eq	initBidders(id, n) =
+		if(n < BidderNumber)
+			then
+				initBidders(s id, s n)
+			< id : Bidder | bidder : domestic, v : 0.0, L : 0.0, L0 : 0.0, M : sampleUniform(0.0, 1.0), items : 0 >
+			< id <- init, P : P0 >
+			else
+				none
+		fi .
+
+	*** init foreign bidders
+	eq	initForeignBidders(id, n) =
+		if(n < ForeignBidderNumber)
+			then
+				initForeignBidders(s id, s n)
+				< id : Bidder | bidder : foreign, v : 0.0, L : 0.0, L0 : 0.0, M : sampleUniform(0.0, 1.0), items : 0 >
+				< id <- init, P : P0 >
+			else
+				none
+		fi .
+
+	*** init snipers
+	eq	initSnipers(id, n) =
+		if(n < SniperNumber)
+			then
+				initSnipers(s id, s n)
+			< id : Sniper | items : 0 >
+			< id <- init, P : P0 >
+			else
+				none
+		fi .
+endm
+
+mod STATE-FORMULAE is
+	inc	SYSTEM-INIT .
+
+	op val : Nat Config -> Float [ctor] .
+	op val : Nat Conf -> Float [ctor] .
+
+	*** Parameters for property: time to get NI items
+	ops idNI : -> Nat [ctor] .
+	eq idNI = 5 .
+	
+	op getTime : Config -> Float .
+	op numberOfItems : ActiveConf -> Float [ctor] .
+	op wonItem : ActiveConf -> Float [ctor] .
+	op winningPrice : Conf -> Float [ctor] .
+	
+	var config : Config .
+	var	conf : Conf .
+	var msg : Message .
+	var dmsg : DelayedMessage .
+	var as : AttributeSet .
+	var	id winnerId rn n : Nat .
+	var t p : Float .
+	var class : Class .
+
+	***val(0) = run finished
+	eq val(0, {conf, time(t), roundEnded(rn)}) = if t >= T then 1.0 else 0.0 fi .
+	
+	***val(1) = current time
+	eq val(1, config) = getTime(config) .
+	
+	eq getTime({conf, time(t), roundEnded(rn)}) = t .
+	
+	***val(2) = number of auctions
+	eq	val(2, {conf, time(t), roundEnded(rn)}) = float(rn) .
+
+	***val(3) = winning price
+	eq	val(3, {conf, time(t), roundEnded(rn)}) = winningPrice(conf) .
+	eq	winningPrice(< 0 : Actioneer | p : p, as > conf) = p .
+endm

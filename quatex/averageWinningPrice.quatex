@@ -1,0 +1,6 @@
+averageWinningPrice(averagePrice, count) =
+	if { count < 100.0 }
+		then # averageWinningPrice( { (averagePrice * count + s.rval(3)) / (count + 1.0) } , { count + 1.0 } )
+		else { averagePrice }
+	fi;
+eval E[ averageWinningPrice( { 0.0 } , { 0.0 } ) ] ;

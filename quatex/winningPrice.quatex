@@ -1,0 +1,6 @@
+winningPrice(count) =
+	if { count < 1.0 }
+		then # winningPrice( { count + 1.0 } )
+		else { s.rval(3) }
+	fi;
+eval E[ winningPrice( { 0.0 } ) ] ;

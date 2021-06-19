@@ -1,0 +1,178 @@
+load stsampler.maude
+
+fmod PARAMETERS is
+	pr	NAT .
+	pr	FLOAT .
+
+	op	N : -> Nat [ctor] .	
+	eq	N = 3 .
+	
+	*** number of domestic bidders
+	op	BidderNumber : -> Nat [ctor] .
+	eq	BidderNumber = 10 .
+	
+	*** number of foreign bidders
+	op	ForeignBidderNumber : -> Nat [ctor] .	
+	eq	ForeignBidderNumber = BidderNumber quo 5 .
+	
+	*** number of snipers
+	op	SniperNumber : -> Nat [ctor] .	
+	eq	SniperNumber = if(BidderNumber > 30) then BidderNumber quo 20 else 1 fi .
+	
+	ops T dt sqrtdt : -> Float [ctor] .
+	eq	T = 1.0 .
+	eq	dt = 0.1 .
+	eq	sqrtdt = sqrt(dt) .
+	
+	ops delay rate0 mu sigma c1 c2 alpha P0 L00 L01 : -> Float [ctor] .
+	
+	eq	delay = 0.001 .
+	eq	rate0 = 1.15 .
+	eq	mu = 0.00001 .
+	eq	sigma = 0.00002 .
+	eq	c1 = 1.2 .
+	eq	c2 = 2.0 .
+	eq	alpha = 0.01 .
+	eq	P0 = 15.0 .
+	eq	L00 = 5.0 .
+	eq	L01 = 7.0 .
+endfm
+
+mod STOCHASTIC-SAMPLER is
+	pr ST-SAMPLER .
+	
+	var prob : Float .
+	
+	op sampleBool : Float -> Bool .
+	
+	eq sampleBool(prob) = rand >= prob .
+endm
+
+fmod SET-NAT is
+  pr  SET{Nat} .
+endfm
+
+fmod CLASS is
+	sort Class .
+	ops  ExchangeRate Actioneer Bidder Sniper : -> Class [ctor].
+endfm
+
+fmod ATTRIBUTE-SET is
+	pr	NAT .
+	pr	BOOL .
+	pr	FLOAT .
+	pr  SET-NAT .
+
+	sort	Attribute .
+	sort	AttributeSet .	
+	subsort	Attribute < AttributeSet .	
+	op	none : -> Attribute [ctor] .
+	op	_,_ : AttributeSet AttributeSet -> AttributeSet [ctor assoc comm id: none] .
+endfm
+
+fmod OBJECT is
+	pr	CLASS .
+	pr	ATTRIBUTE-SET .
+
+	sort	Object .
+	op	<_:_|_> : Nat Class AttributeSet -> Object [ctor format (d d d d d d d d)] .
+endfm
+
+fmod MESSAGE is
+	pr	ATTRIBUTE-SET .
+
+	sort Message .
+	op <_<-_> : Nat AttributeSet -> Message [ctor format (d d d d d d)] .
+	
+	op id :_ : Nat -> Attribute [ctor] .
+endfm
+
+fmod DELAYED-MESSAGE is
+	pr	MESSAGE .
+
+	sort DelayedMessage .
+	op [_,_] : Float Message -> DelayedMessage [ctor format (d d d d d d)] .	
+endfm
+
+fmod CONF is
+	inc	OBJECT .
+	inc MESSAGE .
+	inc DELAYED-MESSAGE .
+
+	sorts	Conf ActiveConf TimeTickingConf TickingConf .
+	subsort Conf < ActiveConf .
+	subsort Conf < TimeTickingConf .
+	subsort Conf < TickingConf .
+	subsort	Object < Conf .
+	subsort	DelayedMessage < Conf .
+	subsort	Message < ActiveConf .
+	op	none : -> Conf [ctor] .
+	op	__ : Conf Conf -> Conf [ctor assoc comm id: none format (d nt d) ] .
+	op	__ : ActiveConf ActiveConf -> ActiveConf [ctor assoc comm id: none format (d nt d) ] .
+	op	__ : TimeTickingConf TimeTickingConf -> TimeTickingConf [ctor assoc comm id: none format (d nt d) ] .
+	op	__ : TickingConf TickingConf -> TickingConf [ctor assoc comm id: none format (d nt d) ] .
+
+	sort	Config .
+	
+	op	{_,time(_),round(_)} : ActiveConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+	op	{_,time(_),roundEnded(_)} : ActiveConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+
+	op	{_,time(_),round(_)} : TimeTickingConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+	op	{_,time(_),roundEnded(_)} : TimeTickingConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+
+	op	{_,time(_),round(_)} : TickingConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+	op	{_,time(_),roundEnded(_)} : TickingConf Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d)] .
+		
+	op	{_,time(_),_,round(_)} : Conf Float Float Nat -> Config [ctor format (d nt d nt d d d d d d d d d d d d)] .
+endfm
+
+mod	SYSTEM is
+	inc	STOCHASTIC-SAMPLER .
+	inc PARAMETERS .
+	inc CONF .
+
+	op	tick : Config -> Config [ctor] .
+	op	processTick : Conf -> TickingConf [ctor] .
+	op	initState : -> Config [ctor] .
+
+	op	timeTick : Config -> Config [ctor] .
+	op	processTimeTick : Conf Float -> TimeTickingConf [ctor] .
+	op	computeTimeStep : Conf Float -> Float .
+	op	processAuctionEnd : Conf -> TimeTickingConf [ctor] .
+
+	var config : Config .
+	var conf : Conf .
+	var activeConf : ActiveConf .
+	var t timeStep sbid p P v : Float .
+	var id n : Nat .
+	var class : Class .
+	var as : AttributeSet .
+	var msg : Message .
+	var dmsg : DelayedMessage .
+
+	ceq	{ conf, time(t), round(n) } = { conf, time(t), computeTimeStep(conf, dt), round(n) } if t <= T .
+	eq	{ conf, time(t), timeStep, round(n) } = { processTimeTick(conf, timeStep), time(t + timeStep), round(n) } .
+
+	*** Compute time step as the minimum between the fixed time step dt and the duration to the next scheduled message arrival time
+	eq	computeTimeStep([t, msg] conf, timeStep) = computeTimeStep(conf, if t > timeStep then timeStep else t fi ) .
+	eq	computeTimeStep(< id : class | as > conf, timeStep) = computeTimeStep(conf, timeStep) .
+	eq	computeTimeStep(none, timeStep) = timeStep .
+	
+	rl	processTimeTick([t, msg] conf, timeStep) => [t - timeStep, msg] processTimeTick(conf, timeStep) .
+	eq	processTimeTick(none, timeStep) = none .
+	ceq [t, msg] = msg if t <= 0.0 . 
+	
+	*** auction ends
+	ceq	{ conf, time(t), round(n)} = {processAuctionEnd(conf), time(t), round(n) } if t >= T .
+	eq	{ processAuctionEnd(none) activeConf, time(t), round(n)} = { activeConf, time(t), roundEnded(n) } .	
+	eq processAuctionEnd(dmsg conf) = processAuctionEnd(conf) .
+
+	*** next auction round
+	ceq {conf, time(t), roundEnded(n)} = {processTick(conf), time(0.0), round(s n)} if n < N .
+	***eq tick({conf, time(t), roundEnded(n)}) = {processTick(conf), time(0.0), round(s n)} .
+	eq processTick(none) = none .
+	
+	*** Help functions
+	op getNonZeroValue : Float -> Float .
+	eq getNonZeroValue(v) = if v > 0.0 then v else 0.0 fi .
+endm
